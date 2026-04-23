@@ -33,6 +33,54 @@ AutoOTA ota(OTA_VERSION, OTA_PATH);
 extern ConfigData cfg;
 
 // ===============================================================
+//                    HX711 PERSISTENT TARE (LittleFS)
+// ===============================================================
+static bool g_hasHxTare = false;
+static long g_hxOffset = 0;
+
+bool hasHx711Tare() { return g_hasHxTare; }
+long hx711TareOffset() { return g_hxOffset; }
+
+bool loadHx711Tare() {
+    g_hasHxTare = false;
+    g_hxOffset = 0;
+    if (!LittleFS.begin()) return false;
+    if (!LittleFS.exists("/hx711.json")) return false;
+    File f = LittleFS.open("/hx711.json", "r");
+    if (!f) return false;
+    JsonDocument doc;
+    auto err = deserializeJson(doc, f);
+    f.close();
+    if (err) return false;
+    if (!doc["offset"].is<long>()) return false;
+    g_hxOffset = doc["offset"].as<long>();
+    g_hasHxTare = true;
+    Serial.printf("[HX711] Loaded tare offset from flash: %ld\n", g_hxOffset);
+    return true;
+}
+
+bool saveHx711Tare(long offset) {
+    if (!LittleFS.begin()) return false;
+    JsonDocument doc;
+    doc["offset"] = offset;
+    File f = LittleFS.open("/hx711.json", "w");
+    if (!f) return false;
+    serializeJson(doc, f);
+    f.close();
+    g_hxOffset = offset;
+    g_hasHxTare = true;
+    Serial.printf("[HX711] Tare offset saved to flash: %ld\n", offset);
+    return true;
+}
+
+void clearHx711Tare() {
+    if (LittleFS.begin()) LittleFS.remove("/hx711.json");
+    g_hasHxTare = false;
+    g_hxOffset = 0;
+    Serial.println("[HX711] Tare offset cleared from flash");
+}
+
+// ===============================================================
 //                    ФУНКЦИИ РАБОТЫ С КОНФИГОМ
 // ===============================================================
 bool loadConfig() {
@@ -267,7 +315,8 @@ bool hx711HardwareOk(int tries = 4) {
 
 hx.begin(ACC_GSM_TX, SOL_GSM_RX);   // DT, SCK HX711 out-gpio13, sck-gpio12
 ;
-    hx.set_scale(cfg.scaleK);
+    // Negative scale: raw decreases when weight increases (inverted load cell direction)
+    hx.set_scale(-cfg.scaleK);
 
     bool ok = false;
     for (int i = 0; i < tries; i++) {
@@ -305,7 +354,10 @@ float readWeight() {
     hx.begin(ACC_GSM_TX , SOL_GSM_RX);
     long raw = hx.read();
 Serial.printf("[HX711] Raw ADC: %ld\n", raw);
-    hx.set_scale(cfg.scaleK);
+    // Negative scale: raw decreases when weight increases (inverted load cell direction)
+    hx.set_scale(-cfg.scaleK);
+    // Always apply saved tare offset (g_hxOffset is 0 when no tare has been saved)
+    hx.set_offset(g_hxOffset);
     hx.power_up();
 
     delay(200); // прогрев HX711 (критично для первого цикла)
@@ -381,10 +433,17 @@ void handleCalibrate2() {
     if (cfg.gsmEnabled) sim800.end();
     delay(5);
 
+    pinMode(SOL_GSM_RX, OUTPUT);
+    digitalWrite(SOL_GSM_RX, LOW);
+    pinMode(ACC_GSM_TX, INPUT_PULLUP);
+    delay(50);
+
 hx.begin(ACC_GSM_TX, SOL_GSM_RX);   // DT, SCK
 ;
-    float raw = hx.get_units(15);           // много сэмплов
-    cfg.scaleK = raw / known;
+    hx.set_scale(1.0f);
+    hx.tare(12);
+    float reading = hx.get_units(15);       // может быть отрицательным при инверсии
+    cfg.scaleK = fabs(reading) / known;     // сохраняем всегда положительное
     saveConfig();
 
     hx.power_down();
@@ -395,7 +454,7 @@ hx.begin(ACC_GSM_TX, SOL_GSM_RX);   // DT, SCK
         "<h2>Calibration Done!</h2>"
         "<p><b>scaleK = %.5f</b></p>"
         "<p>Known: %.3f kg | Raw: %.1f</p>"
-        "<a href='/'>← Back</a>", cfg.scaleK, known, raw);
+        "<a href='/'>&#8592; Back</a>", cfg.scaleK, known, reading);
 
     HttpServer.send(200, "text/html", msg);
     Serial.printf("[HX711] New scaleK = %.5f\n", cfg.scaleK);

@@ -7,6 +7,13 @@
 #include <AutoOTA.h>
 
 extern void saveConfig();
+
+// HX711 persistent tare (LittleFS)
+extern bool loadHx711Tare();
+extern bool saveHx711Tare(long offset);
+extern void clearHx711Tare();
+extern bool hasHx711Tare();
+extern long hx711TareOffset();
 // ===================== AUTO VERSION FROM BUILD TIME =====================
 
 // Преобразование месяца "Jan", "Feb", ... в число 01-12

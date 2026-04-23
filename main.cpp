@@ -66,7 +66,6 @@ extern String buildDailyReportText();
 extern bool sendDailyReport(const String& extra);
 extern void sim800Debug();
 extern ChannelResult measureSingleChannel(uint8_t pin, const char* channelName);
-extern  void doOneTimeTare();
 // Из net.cpp
 extern bool wifi_connect(String& outBestSSID, int& outBestRSSI, int& outBestChannel, 
                          uint8_t outBestBSSID[6], String& scanLog);
@@ -279,6 +278,7 @@ void checkLowVoltageAndCall() {
 // ===============================================================
 void handleFirmwareAndRTC() {
     loadConfigWrapper();
+    loadHx711Tare();  // загрузить offset HX711 из LittleFS (если есть)
 
     const uint32_t FW_ADDR = 0;
     EEPROM.begin(32);
@@ -418,10 +418,7 @@ void setup() {
     initializePins();
     
     handleFirmwareAndRTC();
-    // Автоматический сброс тары только при первом запуске
-if (rtc.reserved3 == 0) {
-   doOneTimeTare();
-}
+
     bool firstCycle = (rtc.reserved3 == 0);
     
     if (cfg.gsmEnabled) {
