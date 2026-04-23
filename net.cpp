@@ -12,6 +12,7 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include "config.h"
+#include "HX711.h"
 #include <user_interface.h>
 
 // ===============================================================
@@ -32,6 +33,7 @@ h1{font-size:38px;padding:18px}
 <a class='btn' href='/flash'>Download Data (BIN)</a>
 <a class='btn' href='/report'>Download Report (TXT)</a>
 <a class='btn' href='/monitor'>Live Monitoring</a>
+<a class='btn' href='/hx'>HX711 Tare</a>
 <a class='btn' href='/set'>SET</a>
 <a class='btn' href='/exit'>Exit & Restart</a>
 </body></html>
@@ -214,6 +216,70 @@ void handleFullWipe() {
         LittleFS.format();
     }
 
+    delay(50);
+    ESP.restart();
+}
+
+// ===============================================================
+//                    HX711 TARE PAGE + ACTIONS
+// ===============================================================
+void handleHxPage() {
+    String s = F("<!DOCTYPE html><html><head>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
+        "<style>body{background:#111;color:#fff;font-family:Arial;text-align:center}"
+        ".btn{width:90%;padding:18px;margin:12px auto;display:block;background:#222;"
+        "color:#fff;font-size:28px;border-radius:14px;border:2px solid #444;text-decoration:none}"
+        ".btn:hover{background:#444}</style></head><body>");
+    s += F("<h2>HX711 Tare</h2>");
+    if (hasHx711Tare()) {
+        s += "<p>Saved offset: <b>" + String(hx711TareOffset()) + "</b></p>";
+    } else {
+        s += F("<p><b>No saved tare</b></p>");
+    }
+    s += F("<a class='btn' href='/hx_tare'>TARE (save to flash)</a>");
+    s += F("<a class='btn' style='background:#850' href='/hx_clear'>Clear saved tare</a>");
+    s += F("<a class='btn' href='/'>&#8592; Back</a>");
+    s += F("</body></html>");
+    HttpServer.send(200, "text/html", s);
+}
+
+static long doHx711TareAndGetOffset() {
+    if (cfg.gsmEnabled) sim800.end();
+    delay(10);
+
+    pinMode(SOL_GSM_RX, OUTPUT);
+    digitalWrite(SOL_GSM_RX, LOW);
+    pinMode(ACC_GSM_TX, INPUT_PULLUP);
+    delay(50);
+
+    HX711 hxLocal;
+    hxLocal.begin(ACC_GSM_TX, SOL_GSM_RX); // DT, SCK
+    hxLocal.set_scale(1.0f);
+    hxLocal.tare(20);
+    long off = hxLocal.get_offset();
+    hxLocal.power_down();
+
+    pinMode(SOL_GSM_RX, INPUT);
+    pinMode(ACC_GSM_TX, INPUT_PULLUP);
+    if (cfg.gsmEnabled) {
+        sim800.begin(9600);
+        delay(8);
+    }
+    return off;
+}
+
+void handleHxTare() {
+    long off = doHx711TareAndGetOffset();
+    bool ok = saveHx711Tare(off);
+    HttpServer.send(200, "text/plain",
+        ok ? "HX711 TARE saved. Restarting..." : "Failed to save HX711 tare. Restarting...");
+    delay(50);
+    ESP.restart();
+}
+
+void handleHxClear() {
+    clearHx711Tare();
+    HttpServer.send(200, "text/plain", "HX711 tare cleared. Restarting...");
     delay(50);
     ESP.restart();
 }
@@ -485,6 +551,9 @@ void enterAPMode(uint32_t durationSec) {
     HttpServer.on("/full_wipe", handleFullWipe);
     HttpServer.on("/calibrate", handleCalibrate);
     HttpServer.on("/calibrate2", HTTP_POST, handleCalibrate2);
+    HttpServer.on("/hx", handleHxPage);
+    HttpServer.on("/hx_tare", handleHxTare);
+    HttpServer.on("/hx_clear", handleHxClear);
 
     HttpServer.on("/exit", [](){
         HttpServer.send(200,"text/plain","Restarting...");
