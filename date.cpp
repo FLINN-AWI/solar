@@ -207,7 +207,7 @@ static const char* HX_TARE_LOCK = "/hx711.lock";
 
 static bool g_hasHxTare = false;
 static long g_hxOffset = 0;
-/*
+
 bool hasHx711Tare() { return g_hasHxTare; }
 long hx711TareOffset() { return g_hxOffset; }
 static bool createHx711TareLock() {
@@ -221,7 +221,7 @@ static bool createHx711TareLock() {
     f.println("LOCK");
     f.close();
 
-    Serial.println("[HX711] ✅ Tare LOCK created (/hx711.lock)");
+    Serial.println("[HX711] Tare LOCK created (/hx711.lock)");
     return true;
 }
 
@@ -256,12 +256,14 @@ bool saveHx711Tare(long offset) {
     return true;
 }
 void clearHx711Tare() {
-    if (LittleFS.begin()) LittleFS.remove(HX_TARE_FILE);   // вместо "/hx711.json"
+    if (LittleFS.begin()) {
+        LittleFS.remove(HX_TARE_FILE);
+        LittleFS.remove(HX_TARE_LOCK);
+    }
     g_hasHxTare = false;
     g_hxOffset = 0;
     Serial.println("[HX711] Tare offset cleared from flash");
 }
-*/
 
 
 
@@ -497,6 +499,63 @@ bool ensureHx711TareSaved() {
     return true;
 }
 */
+// ===============================================================
+//                    ENSURE TARE SAVED (used by main.cpp)
+// ===============================================================
+bool ensureHx711TareSaved() {
+    if (g_hasHxTare) return true;
+
+    if (!LittleFS.begin()) {
+        Serial.println("[HX711] ERROR: LittleFS.begin() failed");
+        return false;
+    }
+
+    const bool hasJson = LittleFS.exists(HX_TARE_FILE);
+    const bool hasLock = LittleFS.exists(HX_TARE_LOCK);
+
+    if (hasJson) {
+        return loadHx711Tare();
+    }
+
+    if (hasLock && !hasJson) {
+        Serial.println("[HX711] LOCK exists but /hx711.json missing -> auto-tare BLOCKED");
+        Serial.println("[HX711] Use /hx page to do manual tare or restore /hx711.json backup.");
+        return false;
+    }
+
+    // First boot: perform tare and save
+    Serial.println("[HX711] First boot: performing tare and saving...");
+
+    if (cfg.gsmEnabled) sim800.end();
+    delay(10);
+
+    pinMode(SOL_GSM_RX, OUTPUT);
+    digitalWrite(SOL_GSM_RX, LOW);
+    pinMode(ACC_GSM_TX, INPUT_PULLUP);
+    delay(80);
+
+    HX711 hxLocal;
+    hxLocal.begin(ACC_GSM_TX, SOL_GSM_RX);
+    hxLocal.set_scale(1.0f);
+    hxLocal.tare(25);
+
+    const long off = hxLocal.get_offset();
+    hxLocal.power_down();
+
+    restoreSim800Pins();
+
+    if (!saveHx711Tare(off)) {
+        Serial.println("[HX711] ERROR: failed to save tare to /hx711.json");
+        return false;
+    }
+
+    if (!createHx711TareLock()) {
+        Serial.println("[HX711] WARNING: failed to create /hx711.lock (json saved anyway)");
+    }
+
+    Serial.printf("[HX711] First-time tare saved+locked: %ld\n", off);
+    return true;
+}
 // ===============================================================
 //                    ОСНОВНАЯ ФУНКЦИЯ ИЗМЕРЕНИЯ ВЕСА
 // ===============================================================
