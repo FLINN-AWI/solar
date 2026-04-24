@@ -25,7 +25,7 @@ const char HTML_MAIN[] PROGMEM = R"rawliteral(
 <meta name='viewport' content='width=device-width,initial-scale=1'>
 <style>
 body{background:#111;color:#fff;text-align:center;font-family:Arial;margin:0}
-.btn{width:80%;padding:18px;margin:12px auto;display:block;background:#222;color:#fff;font-size:28px;border-radius:14px;border:2px solid #444;text-decoration:none}
+.btn{width:80%%;padding:18px;margin:12px auto;display:block;background:#222;color:#fff;font-size:28px;border-radius:14px;border:2px solid #444;text-decoration:none}
 .btn:hover{background:#444}
 h1{font-size:38px;padding:18px}
 </style></head><body>

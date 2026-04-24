@@ -228,7 +228,7 @@ bool checkIncomingCall() {
 // ===============================================================
 void goToDeepSleepWithOTA() {
     uint32_t cycleTime = millis() - lastWakeTime;
-    Serial.printf("[DOMOFON] Cycle completed in %lu ms\n", cycleTime);  // %u -> %lu
+    Serial.printf("[DOMOFON] Cycle completed in %lu ms\n", (unsigned long)cycleTime);
     Serial.printf("[DOMOFON] Preparing for deep sleep (%u seconds)\n", cfg.sleepSec);
     // Проверяем, нужно ли делать OTA в этом цикле
     bool needOta = false;
