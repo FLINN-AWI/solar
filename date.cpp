@@ -1,4 +1,5 @@
-// BUILD_TIMESTAMP: 2026-04-04 21:54:41
+// BUILD_TIMESTAMP: 2026-04-23 23:18:12
+// FILE_BUILD_TIMESTAMP: 2026-04-23 23:18:12
 // date.cpp — Перенос основной логики из main.cpp
 // Модель LLM: Flash 2.5 (Gemini)
 // Build: 2025-12-06 15:28 CET
@@ -196,10 +197,72 @@ static int16_t g_lastSim800CSQ = -1; // 0..31, 99; -1 = unknown
 // ===============================================================
 //                ИЗМЕРЕНИЕ ВЕСА
 // ===============================================================
+
 // ===============================================================
-//                    HX711 WEIGHT MEASUREMENT BLOCK (v2)
+//                    HX711 PERSISTENT TARE (LittleFS)
 // ===============================================================
-// Автоматический tare — только 1 раз при первом запуске
+
+static const char* HX_TARE_FILE = "/hx711.json";
+static const char* HX_TARE_LOCK = "/hx711.lock";
+
+static bool g_hasHxTare = false;
+static long g_hxOffset = 0;
+/*
+bool hasHx711Tare() { return g_hasHxTare; }
+long hx711TareOffset() { return g_hxOffset; }
+static bool createHx711TareLock() {
+    if (!LittleFS.begin()) return false;
+
+    if (LittleFS.exists(HX_TARE_LOCK)) return true;
+
+    File f = LittleFS.open(HX_TARE_LOCK, "w");
+    if (!f) return false;
+
+    f.println("LOCK");
+    f.close();
+
+    Serial.println("[HX711] ✅ Tare LOCK created (/hx711.lock)");
+    return true;
+}
+
+bool loadHx711Tare() {
+    g_hasHxTare = false;
+    g_hxOffset = 0;
+    if (!LittleFS.begin()) return false;
+    if (!LittleFS.exists(HX_TARE_FILE)) return false;
+    File f = LittleFS.open(HX_TARE_FILE, "r");
+    if (!f) return false;
+    JsonDocument doc;
+    auto err = deserializeJson(doc, f);
+    f.close();
+    if (err) return false;
+    if (!doc["offset"].is<long>()) return false;
+    g_hxOffset = doc["offset"].as<long>();
+    g_hasHxTare = true;
+    Serial.printf("[HX711] Loaded tare offset from flash: %ld\n", g_hxOffset);
+    return true;
+}
+bool saveHx711Tare(long offset) {
+    if (!LittleFS.begin()) return false;
+    JsonDocument doc;
+    doc["offset"] = offset;
+    File f = LittleFS.open(HX_TARE_FILE, "w");
+    if (!f) return false;
+    serializeJson(doc, f);
+    f.close();
+    g_hxOffset = offset;
+    g_hasHxTare = true;
+    Serial.printf("[HX711] Tare offset saved to flash: %ld\n", offset);
+    return true;
+}
+void clearHx711Tare() {
+    if (LittleFS.begin()) LittleFS.remove(HX_TARE_FILE);   // вместо "/hx711.json"
+    g_hasHxTare = false;
+    g_hxOffset = 0;
+    Serial.println("[HX711] Tare offset cleared from flash");
+}
+*/
+
 
 
 
@@ -223,35 +286,84 @@ void restoreSim800Pins() {
     delay(5);
 }
 
+/*
 // ===============================================================
-//                    АВТОМАТИЧЕСКИЙ TARE (только 1 раз)
+//                    HX711 PERSISTENT TARE (LittleFS)
 // ===============================================================
-void doOneTimeTare() {
-    Serial.println("[HX711] === FIRST BOOT TARE ===");
-    
+
+// NEW: tare files
+
+// Делает tare и сохраняет offset в LittleFS.
+// Возвращает true если успешно.
+bool ensureHx711TareSaved() {
+    // 1) Если уже загружено в RAM — ок
+    if (hasHx711Tare()) {
+        Serial.printf("[HX711] Tare already loaded: %ld\n", hx711TareOffset());
+        return true;
+    }
+
+    // 2) Проверяем FS состояние
+    if (!LittleFS.begin()) {
+        Serial.println("[HX711] ERROR: LittleFS.begin() failed");
+        return false;
+    }
+
+    bool hasJson = LittleFS.exists(HX_TARE_FILE);
+    bool hasLock = LittleFS.exists(HX_TARE_LOCK);
+
+    // 2a) Нормальный случай: есть json -> просто загрузим
+    if (hasJson) {
+        bool ok = loadHx711Tare();
+        Serial.println(ok ? "[HX711] ✅ Tare loaded from /hx711.json"
+                          : "[HX711] ❌ Failed to load /hx711.json");
+        return ok;
+    }
+
+    // 2b) ВАЖНОЕ: lock есть, а json нет -> авто-tare запрещён
+    if (hasLock && !hasJson) {
+        Serial.println("[HX711] ❌ Tare LOCK exists but /hx711.json is missing.");
+        Serial.println("[HX711] ❌ Auto-tare is DISABLED to avoid taring under hive load.");
+        Serial.println("[HX711] Action: restore /hx711.json from backup or do manual tare via /hx page.");
+        return false;
+    }
+
+    // 2c) Самый первый запуск: нет json и нет lock -> можно делать auto-tare
+    Serial.println("[HX711] First-time tare (no json, no lock) -> performing tare and saving...");
+
     if (cfg.gsmEnabled) sim800.end();
     delay(10);
 
     pinMode(SOL_GSM_RX, OUTPUT);
     digitalWrite(SOL_GSM_RX, LOW);
     pinMode(ACC_GSM_TX, INPUT_PULLUP);
-    delay(50);
+    delay(80);
 
-hx.begin(ACC_GSM_TX, SOL_GSM_RX);   // DT, SCK
-;
-    hx.tare(12);                    // 12 измерений для точного нуля
-    hx.power_down();
+    HX711 hxLocal;
+    hxLocal.begin(ACC_GSM_TX, SOL_GSM_RX); // DT, SCK
+    hxLocal.set_scale(1.0f);
+    hxLocal.tare(25);
+
+    long off = hxLocal.get_offset();
+    hxLocal.power_down();
 
     restoreSim800Pins();
 
-    // Устанавливаем флаг, что tare уже выполнен
-    rtc.reserved3 = 1;              // Используем существующий first-cycle флаг
-    rtcSave();
+    if (!saveHx711Tare(off)) {
+        Serial.println("[HX711] ERROR: failed to save tare to /hx711.json");
+        return false;
+    }
 
-    Serial.println("[HX711] ✅ Automatic tare completed and saved");
+    // Сразу создаём lock
+    if (!createHx711TareLock()) {
+        Serial.println("[HX711] ERROR: failed to create /hx711.lock");
+        // Тут можно вернуть false (строго), но json уже записан.
+        // Я предлагаю вернуть true, но залогировать проблему.
+        return true;
+    }
+
+    Serial.printf("[HX711] ✅ First-time tare saved and locked: %ld\n", off);
+    return true;
 }
-
-// ===============================================================
 //                    ПРОВЕРКА ЖЕЛЕЗА HX711
 // ===============================================================
 bool hx711HardwareOk(int tries = 4) {
@@ -267,7 +379,8 @@ bool hx711HardwareOk(int tries = 4) {
 
 hx.begin(ACC_GSM_TX, SOL_GSM_RX);   // DT, SCK HX711 out-gpio13, sck-gpio12
 ;
-    hx.set_scale(cfg.scaleK);
+    // Negative scale: raw decreases when weight increases (inverted load cell direction)
+    hx.set_scale(-cfg.scaleK);
 
     bool ok = false;
     for (int i = 0; i < tries; i++) {
@@ -285,13 +398,202 @@ hx.begin(ACC_GSM_TX, SOL_GSM_RX);   // DT, SCK HX711 out-gpio13, sck-gpio12
     Serial.println(ok ? "[HX711] ✅ Hardware OK" : "[HX711] ❌ Hardware FAIL");
     return ok;
 }
+*/
+ 
+ // Единственная функция управления тарой HX711.
+// Политика:
+// - если есть /hx711.json -> загружаем offset (в RAM)
+// - если json нет, но есть /hx711.lock -> НИЧЕГО не тарим (это защита от тары под ульем)
+// - если нет и json, и lock -> это первый запуск -> делаем tare, сохраняем json, создаём lock
+/*
+bool ensureHx711TareSaved() {
+    if (g_hasHxTare) return true;
 
+    if (!LittleFS.begin()) {
+        Serial.println("[HX711] ERROR: LittleFS.begin() failed");
+        return false;
+    }
+
+    const bool hasJson = LittleFS.exists(HX_TARE_FILE);
+    const bool hasLock = LittleFS.exists(HX_TARE_LOCK);
+
+    // 1) обычный режим: json существует -> просто грузим
+    if (hasJson) {
+        File f = LittleFS.open(HX_TARE_FILE, "r");
+        if (!f) {
+            Serial.println("[HX711] ERROR: open /hx711.json failed");
+            return false;
+        }
+        JsonDocument doc;
+        auto err = deserializeJson(doc, f);
+        f.close();
+        if (err || !doc["offset"].is<long>()) {
+            Serial.println("[HX711] ERROR: parse /hx711.json failed");
+            return false;
+        }
+
+        g_hxOffset = doc["offset"].as<long>();
+        g_hasHxTare = true;
+        Serial.printf("[HX711] Loaded tare offset: %ld\n", g_hxOffset);
+        return true;
+    }
+
+    // 2) защита: lock есть, json нет -> авто-tare запрещён
+    if (hasLock && !hasJson) {
+        Serial.println("[HX711] ❌ LOCK exists but /hx711.json missing -> auto-tare BLOCKED");
+        Serial.println("[HX711] Use /hx page to do manual tare or restore /hx711.json backup.");
+        return false;
+    }
+
+    // 3) первый запуск: нет json и нет lock -> делаем tare и сохраняем
+    Serial.println("[HX711] First boot: no json+no lock -> performing tare and saving...");
+
+    // отключаем GSM serial (как у тебя)
+    if (cfg.gsmEnabled) sim800.end();
+    delay(10);
+
+    // переключаем пины под HX711
+    pinMode(SOL_GSM_RX, OUTPUT);
+    digitalWrite(SOL_GSM_RX, LOW);
+    pinMode(ACC_GSM_TX, INPUT_PULLUP);
+    delay(80);
+
+    HX711 hxLocal;
+    hxLocal.begin(ACC_GSM_TX, SOL_GSM_RX);
+    hxLocal.set_scale(1.0f);
+    hxLocal.tare(25);
+
+    const long off = hxLocal.get_offset();
+    hxLocal.power_down();
+
+    // вернуть пины/Serial обратно
+    restoreSim800Pins();
+
+    // сохранить json
+    {
+        JsonDocument doc;
+        doc["offset"] = off;
+        File f = LittleFS.open(HX_TARE_FILE, "w");
+        if (!f) {
+            Serial.println("[HX711] ERROR: write /hx711.json failed");
+            return false;
+        }
+        serializeJson(doc, f);
+        f.close();
+    }
+
+    // создать lock
+    {
+        File f = LittleFS.open(HX_TARE_LOCK, "w");
+        if (f) { f.println("LOCK"); f.close(); }
+        else {
+            Serial.println("[HX711] WARNING: failed to create /hx711.lock (json saved anyway)");
+        }
+    }
+
+    g_hxOffset = off;
+    g_hasHxTare = true;
+    Serial.printf("[HX711] ✅ First-time tare saved+locked: %ld\n", g_hxOffset);
+    return true;
+}
+*/
 // ===============================================================
 //                    ОСНОВНАЯ ФУНКЦИЯ ИЗМЕРЕНИЯ ВЕСА
 // ===============================================================
 float readWeight() {
-    const int warmup = 3;   // сколько первых чтений выкинуть
-    const int samples = 7;  // медиана устойчивее, чем 5
+    // ------------------------------------------------------------
+    // 1) Ensure tare offset is loaded (or saved on first boot)
+    // ------------------------------------------------------------
+    if (!g_hasHxTare) {
+        if (!LittleFS.begin()) {
+            Serial.println("[HX711] ERROR: LittleFS.begin() failed");
+            return lastWeight;
+        }
+
+        const bool hasJson = LittleFS.exists(HX_TARE_FILE);
+        const bool hasLock = LittleFS.exists(HX_TARE_LOCK);
+
+        if (hasJson) {
+            // load /hx711.json
+            File f = LittleFS.open(HX_TARE_FILE, "r");
+            if (!f) {
+                Serial.println("[HX711] ERROR: open /hx711.json failed");
+                return lastWeight;
+            }
+
+            JsonDocument doc;
+            auto err = deserializeJson(doc, f);
+            f.close();
+
+            if (err || !doc["offset"].is<long>()) {
+                Serial.println("[HX711] ERROR: parse /hx711.json failed");
+                return lastWeight;
+            }
+
+            g_hxOffset = doc["offset"].as<long>();
+            g_hasHxTare = true;
+            Serial.printf("[HX711] Loaded tare offset from flash: %ld\n", g_hxOffset);
+        }
+        else if (hasLock) {
+            // protection: do NOT auto-tare under hive load
+            Serial.println("[HX711] ❌ /hx711.lock exists but /hx711.json missing -> auto-tare BLOCKED");
+            Serial.println("[HX711] Restore /hx711.json or do manual tare via web.");
+            return lastWeight;
+        }
+        else {
+            // first boot: no json + no lock -> do tare and save
+            Serial.println("[HX711] First boot: no json+no lock -> performing tare and saving...");
+
+            if (cfg.gsmEnabled) sim800.end();
+            delay(10);
+
+            pinMode(SOL_GSM_RX, OUTPUT);
+            digitalWrite(SOL_GSM_RX, LOW);
+            pinMode(ACC_GSM_TX, INPUT_PULLUP);
+            delay(80);
+
+            HX711 hxLocal;
+            hxLocal.begin(ACC_GSM_TX, SOL_GSM_RX);
+            hxLocal.set_scale(1.0f);
+            hxLocal.tare(25);
+
+            const long off = hxLocal.get_offset();
+            hxLocal.power_down();
+
+            // restore pins/serial back (your existing helper)
+            restoreSim800Pins();
+
+            // save json
+            {
+                JsonDocument doc;
+                doc["offset"] = off;
+                File f = LittleFS.open(HX_TARE_FILE, "w");
+                if (!f) {
+                    Serial.println("[HX711] ERROR: write /hx711.json failed");
+                    return lastWeight;
+                }
+                serializeJson(doc, f);
+                f.close();
+            }
+
+            // create lock
+            {
+                File f = LittleFS.open(HX_TARE_LOCK, "w");
+                if (f) { f.println("LOCK"); f.close(); }
+                else Serial.println("[HX711] WARNING: failed to create /hx711.lock (json saved anyway)");
+            }
+
+            g_hxOffset = off;
+            g_hasHxTare = true;
+            Serial.printf("[HX711] ✅ First-time tare saved+locked: %ld\n", g_hxOffset);
+        }
+    }
+
+    // ------------------------------------------------------------
+    // 2) Normal weight measurement (uses g_hxOffset)
+    // ------------------------------------------------------------
+    const int warmup = 3;
+    const int samples = 7;
     float readings[samples];
 
     if (cfg.gsmEnabled) sim800.end();
@@ -299,30 +601,32 @@ float readWeight() {
 
     pinMode(SOL_GSM_RX, OUTPUT);
     digitalWrite(SOL_GSM_RX, LOW);
-    pinMode(ACC_GSM_TX , INPUT_PULLUP);
-    delay(50); // дать линиям устаканиться после переключения
+    pinMode(ACC_GSM_TX, INPUT_PULLUP);
+    delay(50);
 
-    hx.begin(ACC_GSM_TX , SOL_GSM_RX);
+    hx.begin(ACC_GSM_TX, SOL_GSM_RX);
+
     long raw = hx.read();
-Serial.printf("[HX711] Raw ADC: %ld\n", raw);
-    hx.set_scale(cfg.scaleK);
+    Serial.printf("[HX711] Raw ADC: %ld\n", raw);
+
+    // IMPORTANT: you use negative scale (inverted)
+    hx.set_scale(-cfg.scaleK);
+    hx.set_offset(g_hxOffset);
     hx.power_up();
 
-    delay(200); // прогрев HX711 (критично для первого цикла)
+    delay(200);
 
     if (!hx.wait_ready_retry(10, 150)) {
         Serial.println("[HX711] Not ready");
         restoreSim800Pins();
-        return lastWeight; // что было, то и возвращаем
+        return lastWeight;
     }
 
-    // Прогревочные чтения (НЕ используем)
     for (int i = 0; i < warmup; i++) {
         (void)hx.get_units(1);
         delay(60);
     }
 
-    // Рабочие чтения
     for (int i = 0; i < samples; i++) {
         readings[i] = hx.get_units(1);
         delay(60);
@@ -333,20 +637,15 @@ Serial.printf("[HX711] Raw ADC: %ld\n", raw);
 
     std::sort(readings, readings + samples);
     float median = readings[samples / 2];
-    if (median < 0) median = 0;
+    Serial.printf("[HX711] median before clamp: %.3f\n", median);
 
-    // NEW: первое валидное измерение — принять как baseline,
-    // НЕ “прилипать” к lastWeight==0
+    // baseline/hysteresis (as you had)
     if (!weightBaselineReady) {
         weightBaselineReady = true;
         lastWeight = median;
     } else {
-        // Гистерезис как раньше
-        if (fabs(median - lastWeight) < 0.08f) {
-            median = lastWeight;
-        } else {
-            lastWeight = median;
-        }
+        if (fabs(median - lastWeight) < 0.08f) median = lastWeight;
+        else lastWeight = median;
     }
 
     Serial.printf("[HX711] Weight: %.3f kg\n", median);
@@ -381,10 +680,17 @@ void handleCalibrate2() {
     if (cfg.gsmEnabled) sim800.end();
     delay(5);
 
+    pinMode(SOL_GSM_RX, OUTPUT);
+    digitalWrite(SOL_GSM_RX, LOW);
+    pinMode(ACC_GSM_TX, INPUT_PULLUP);
+    delay(50);
+
 hx.begin(ACC_GSM_TX, SOL_GSM_RX);   // DT, SCK
 ;
-    float raw = hx.get_units(15);           // много сэмплов
-    cfg.scaleK = raw / known;
+    hx.set_scale(1.0f);
+    hx.tare(12);
+    float reading = hx.get_units(15);       // может быть отрицательным при инверсии
+    cfg.scaleK = fabs(reading) / known;     // сохраняем всегда положительное
     saveConfig();
 
     hx.power_down();
@@ -395,7 +701,7 @@ hx.begin(ACC_GSM_TX, SOL_GSM_RX);   // DT, SCK
         "<h2>Calibration Done!</h2>"
         "<p><b>scaleK = %.5f</b></p>"
         "<p>Known: %.3f kg | Raw: %.1f</p>"
-        "<a href='/'>← Back</a>", cfg.scaleK, known, raw);
+        "<a href='/'>&#8592; Back</a>", cfg.scaleK, known, reading);
 
     HttpServer.send(200, "text/html", msg);
     Serial.printf("[HX711] New scaleK = %.5f\n", cfg.scaleK);

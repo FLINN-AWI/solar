@@ -1,4 +1,5 @@
-// BUILD_TIMESTAMP: 2026-04-04 21:54:41
+// BUILD_TIMESTAMP: 2026-04-23 23:18:12
+// FILE_BUILD_TIMESTAMP: 2026-04-23 22:14:38
 // main.cpp — МАКСИМАЛЬНО УПРОЩЕННАЯ ВЕРСИЯ
 
 #include <Arduino.h>
@@ -66,7 +67,6 @@ extern String buildDailyReportText();
 extern bool sendDailyReport(const String& extra);
 extern void sim800Debug();
 extern ChannelResult measureSingleChannel(uint8_t pin, const char* channelName);
-extern  void doOneTimeTare();
 // Из net.cpp
 extern bool wifi_connect(String& outBestSSID, int& outBestRSSI, int& outBestChannel, 
                          uint8_t outBestBSSID[6], String& scanLog);
@@ -76,7 +76,7 @@ extern bool sim800Init();
 extern bool sim800SendSMS(const String& phone, const String& msg);
 extern bool checkSim800Presence();
 extern String sim800Command(const String& cmd, uint32_t timeout);
-
+extern bool ensureHx711TareSaved();
 // Из viessmann.cpp
 extern void handleViessmannMode();
 extern void pulse(int pin, int ms);
@@ -279,7 +279,9 @@ void checkLowVoltageAndCall() {
 // ===============================================================
 void handleFirmwareAndRTC() {
     loadConfigWrapper();
+    loadHx711Tare();  // загрузить offset HX711 из LittleFS (если есть)
 
+ensureHx711TareSaved();  // NEW: гарантируем, что либо загрузили, либо 1 раз создали+залочили
     const uint32_t FW_ADDR = 0;
     EEPROM.begin(32);
     char oldVer[16] = {0};
@@ -305,6 +307,8 @@ void handleFirmwareAndRTC() {
 
         // Сброс конфига — как при прошивке
         resetConfigToDefaults();
+
+    ensureHx711TareSaved();
     }
     else if (!rtcOk) {
         // ✅ ПОЛНЫЙ OFF питания / сброс RTC memory: теперь делаем ТО ЖЕ, что при перепрошивке
@@ -320,6 +324,7 @@ void handleFirmwareAndRTC() {
         // ✅ Сбрасываем конфиг как при перепрошивке
         resetConfigToDefaults();
 
+    ensureHx711TareSaved();
         // (опционально) можно обновить oldVer в EEPROM, но обычно не нужно,
         // потому что прошивка не менялась — newFW=false.
     }
@@ -418,10 +423,7 @@ void setup() {
     initializePins();
     
     handleFirmwareAndRTC();
-    // Автоматический сброс тары только при первом запуске
-if (rtc.reserved3 == 0) {
-   doOneTimeTare();
-}
+
     bool firstCycle = (rtc.reserved3 == 0);
     
     if (cfg.gsmEnabled) {

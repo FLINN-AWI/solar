@@ -1,4 +1,5 @@
-// BUILD_TIMESTAMP: 2026-04-04 21:54:41
+// BUILD_TIMESTAMP: 2026-04-23 23:18:12
+// FILE_BUILD_TIMESTAMP: 2026-04-23 12:51:18
 // config.h - Project configuration and pinout
 
 
@@ -7,6 +8,13 @@
 #include <AutoOTA.h>
 
 extern void saveConfig();
+
+// HX711 persistent tare (LittleFS)
+extern bool loadHx711Tare();
+extern bool saveHx711Tare(long offset);
+extern void clearHx711Tare();
+extern bool hasHx711Tare();
+extern long hx711TareOffset();
 // ===================== AUTO VERSION FROM BUILD TIME =====================
 
 // Преобразование месяца "Jan", "Feb", ... в число 01-12
