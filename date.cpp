@@ -259,6 +259,8 @@ void clearHx711Tare() {
     if (LittleFS.begin()) {
         LittleFS.remove(HX_TARE_FILE);
         LittleFS.remove(HX_TARE_LOCK);
+    } else {
+        Serial.println("[HX711] ERROR: LittleFS.begin() failed - files not removed");
     }
     g_hasHxTare = false;
     g_hxOffset = 0;
@@ -526,6 +528,8 @@ bool ensureHx711TareSaved() {
     // First boot: perform tare and save
     Serial.println("[HX711] First boot: performing tare and saving...");
 
+    // HX711 shares pins with GSM (SOL_GSM_RX=SCK, ACC_GSM_TX=DT).
+    // GSM serial must be stopped and pins reconfigured before using HX711.
     if (cfg.gsmEnabled) sim800.end();
     delay(10);
 
